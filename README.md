@@ -1,168 +1,345 @@
 # JMStatefulTableViewController
 
-This is the class I use whenever I need to implement a "stateful" table view in an iOS app. In this context, when I say "stateful" I mean a table view controller that has the following "states":
+A stateful table view controller for iOS that manages loading states, pull-to-refresh, and infinite scrolling. Now includes SwiftUI support!
 
-* Initially loading for the first time since instantiating. (Usually displaying a "loading" view covering the table view entirely).
-* An "idle" state, where the user can scroll around and consume content, no special activity happening.
-* Loading from a "pull to refresh" gesture.
-* Loading the next "page" in a scenario where I need to scroll "infinitely."
-* Empty (Usually displaying a nice looking "empty" view covering the table view entirely).
-* Error (This is useful when the "initial" load fails or I need to communicate that some other horrible thing has happened).
+## Features
 
-If you're using `JMStatefulTableViewController` in your application, add it to [the list](https://github.com/jakemarsh/JMStatefulTableViewController/wiki/Applications).
+- **Loading States**: Automatic management of idle, loading, empty, and error states
+- **Pull-to-Refresh**: Built-in support using native `UIRefreshControl`
+- **Infinite Scrolling**: Automatic pagination when scrolling near the bottom
+- **SwiftUI Support**: `JMStatefulList` component with the same functionality
+- **Modern Swift**: Async/await API, @MainActor support, Sendable conformance
+- **Customizable Views**: Easily replace loading, empty, and error views
+- **State Callbacks**: Delegate methods for state transitions
 
-## Screenshots
+## Requirements
 
-<center>
-<img src="http://cl.ly/IHVb/iOS%20Simulator%20Screen%20shot%20Jul%2023,%202012%2012.42.19%20PM.png" width="320" title="Pull to Refresh" />
-&nbsp;&nbsp;&nbsp;<img src="http://cl.ly/IGtN/iOS%20Simulator%20Screen%20shot%20Jul%2023,%202012%2012.42.22%20PM.png" width="320" title="Infinte Scrolling" />
-</center>
+- iOS 15.0+ / macOS 12.0+ / tvOS 15.0+ / watchOS 8.0+
+- Swift 5.9+
+- Xcode 15+
 
-## Example Usage
+## Installation
 
-The demo project hosted in this repo is the first place you should look for how to implement `JMStatefulTableViewController` in your app, but basically you just need to subclass `JMStatefulTableViewController` and implement the required delegate methods on that subclass.
+### Swift Package Manager
 
-The next section shows an example of how you might implement the required delegate methods.
+Add the following to your `Package.swift`:
 
-### First Time Loading
+```swift
+dependencies: [
+    .package(url: "https://github.com/jakemarsh/JMStatefulTableViewController.git", from: "2.0.0")
+]
+```
 
-`JMStatefulTableViewController` will call it's `statefulDelegate` with this method, passing it in two blocks, a `success` and `failure` block, when the table view needs to load it's "initial" bit of content. It will also transparently handle changing the state to `JMStatefulTableViewControllerStateInitialLoading` for you. 
+Or in Xcode: File → Add Package Dependencies → Enter the repository URL.
 
-You should write or call your code to load your initial set of content inside this method, and then call the correct block for the outcome. If your data loaded successfully, call the `success`, if it failed for some reason call the `failure` block, optionally passing in an `NSError` object, or `nil`.
+## Usage
 
+### UIKit - JMStatefulTableViewController
 
-``` objective-c
-- (void) statefulTableViewControllerWillBeginInitialLoading:(JMStatefulTableViewController *)vc completionBlock:(void (^)())success failure:(void (^)(NSError *error))failure {
-	// Always do any sort of heavy loading work on a background queue:
-    dispatch_async(dispatch_get_global_queue(0, DISPATCH_QUEUE_PRIORITY_DEFAULT), ^{
-        self.catPhotos = [self _loadHilariousCatPhotosFromTheInternet];
-                                                    
-		// Always call success() on the main queue:
-        dispatch_async(dispatch_get_main_queue(), ^{
-            success();
-        });
-    });
+Subclass `JMStatefulTableViewController` and implement the required loading methods:
+
+```swift
+class MyTableViewController: JMStatefulTableViewController {
+    var items: [Item] = []
+    var hasMorePages = true
+
+    // MARK: - Data Source
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        items.count
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
+        cell.textLabel?.text = items[indexPath.row].title
+        return cell
+    }
+
+    // MARK: - Loading Methods
+
+    override func loadInitialContent() async throws {
+        items = try await api.fetchItems()
+        tableView.reloadData()
+    }
+
+    override func loadFromPullToRefresh() async throws -> JMPullToRefreshResult {
+        let newItems = try await api.fetchNewerItems(than: items.first)
+        items.insert(contentsOf: newItems, at: 0)
+
+        // Return inserted index paths for smooth animation
+        let indexPaths = (0..<newItems.count).map { IndexPath(row: $0, section: 0) }
+        return JMPullToRefreshResult(insertedIndexPaths: indexPaths)
+    }
+
+    override func loadNextPage() async throws {
+        let moreItems = try await api.fetchOlderItems(than: items.last)
+        items.append(contentsOf: moreItems)
+        hasMorePages = !moreItems.isEmpty
+        tableView.reloadData()
+    }
+
+    override func canLoadNextPage() -> Bool {
+        hasMorePages
+    }
 }
 ```
 
-### Loading From Pull To Refresh
+### SwiftUI - JMStatefulList
 
-`JMStatefulTableViewController` will call it's `statefulDelegate` with this method, passing it in two blocks, a `success` and `failure` block when the user finishes a "pull to refresh" gesture. Note that the `success` block in this case is asking for an array of `NSIndexPath` objects.
+Use `JMStatefulList` for SwiftUI projects:
 
-I've implemented it this way so I can easily achieve what I call "proper" pull to refresh style loading. In "proper" pull to refresh loading, the existing content stays in place and the new content appears above it, without offsetting the table view at all. This is how [Loren Brichter](http://twitter.com/lorenb) (original inventor of the concept) originally invented and intended it to work. In my opinion it also makes more logical sense. However, if you'd like, you can simple pass `nil` in for the array of `NSIndexPaths` or an empty `NSArray` object, and `JMStatefulTableViewController` will degrade gracefully, replacing the content in your tableview with the latest content. 
+```swift
+struct ContentView: View {
+    @StateObject private var viewModel = ItemsViewModel()
 
-You should write or call your code to load any newer content than the current first item (or optionally just reload everything, like many apps do these days), and then call the correct block for the outcome. If your data loaded successfully, call the `success` block, if it failed for some reason call the `failure` block, optionally passing in an `NSError` object, or `nil`.
-
-``` objective-c
-- (void) statefulTableViewControllerWillBeginLoadingFromPullToRefresh:(JMStatefulTableViewController *)vc completionBlock:(void (^)(NSArray *indexPathsToInsert))success failure:(void (^)(NSError *error))failure {
-	// Always do any sort of heavy loading work on a background queue:
-    dispatch_async(dispatch_get_global_queue(0, DISPATCH_QUEUE_PRIORITY_DEFAULT), ^{
-		// Grab what is currently our first photo
-		CatPhoto *photo = [self.catPhotos objectAtIndex:0];
-		
-		// Load any newer photos that might have been added on our server
-        NSArray *catPhotos = [self _loadHilariousCatPhotosFromTheInternetNewerThanPhoto:photo];
-
-		// Prepend our self.catPhotos array with these new photos we loaded
-        self.catPhotos = [catPhotos arrayByAddingObjectsFromArray:self.catPhotos];
-
-		// Put together an array of NSIndexPath objects representing
-		// what the index paths will be of the new rows that will be created
-        NSMutableArray *a = [NSMutableArray array];
-
-        for(NSInteger i = 0; i < loadedBeerStrings.count; i++) {
-            [a addObject:[NSIndexPath indexPathForRow:i inSection:0]];
+    var body: some View {
+        JMStatefulList(
+            state: viewModel.state,
+            loadInitial: { try await viewModel.loadInitial() },
+            loadMore: viewModel.hasMore ? { try await viewModel.loadMore() } : nil,
+            refresh: { try await viewModel.refresh() }
+        ) {
+            ForEach(viewModel.items) { item in
+                ItemRow(item: item)
+            }
         }
+    }
+}
 
-		// Always call success() on the main queue:
-        dispatch_async(dispatch_get_main_queue(), ^{
-			// If we didn't want to achieve "proper" pull to refresh behavior, we could just pass `nil` in here:
-            success([NSArray arrayWithArray:a]);
-        });
-    });
+@MainActor
+class ItemsViewModel: ObservableObject {
+    @Published var items: [Item] = []
+    @Published var state: JMStatefulListState = .loading
+    var hasMore = true
+
+    func loadInitial() async throws {
+        items = try await api.fetchItems()
+        state = items.isEmpty ? .empty : .idle
+    }
+
+    func loadMore() async throws {
+        let moreItems = try await api.fetchOlderItems(than: items.last)
+        items.append(contentsOf: moreItems)
+        hasMore = !moreItems.isEmpty
+    }
+
+    func refresh() async throws {
+        let newItems = try await api.fetchNewerItems(than: items.first)
+        items.insert(contentsOf: newItems, at: 0)
+    }
 }
 ```
 
-### Loading The Next "Page"
+### Using JMStatefulListStateManager
 
-`JMStatefulTableViewController` will call it's `statefulDelegate` with this method, passing it in two blocks, a `success` and `failure` block, when the users scrolls to the bottom of your table view.
+For more convenient state management:
 
-You should write or call your code to load the next set of content, and then call the correct block for the outcome. If your data loaded successfully, call the `success` block, if it failed for some reason call the `failure` block, optionally passing in an `NSError` object, or `nil`.
+```swift
+@MainActor
+class ItemsViewModel: ObservableObject {
+    @Published var items: [Item] = []
+    let stateManager = JMStatefulListStateManager()
+    var hasMore = true
 
-``` objective-c                                                                 
-- (void) statefulTableViewControllerWillBeginLoadingNextPage:(JMStatefulTableViewController *)vc completionBlock:(void (^)())success failure:(void (^)(NSError *))failure {
-	// Always do any sort of heavy loading work on a background queue:
-    dispatch_async(dispatch_get_global_queue(0, DISPATCH_QUEUE_PRIORITY_DEFAULT), ^{
-		// Grab what is currently our last photo
-		CatPhoto *photo = [self.catPhotos lastObject];
-		
-		// Load any older cat photos from our server
-        NSArray *catPhotos = [self _loadHilariousCatPhotosFromTheInternetOlderThanPhoto:photo];
+    func loadInitial() async throws {
+        do {
+            items = try await api.fetchItems()
+            if items.isEmpty {
+                stateManager.setEmpty()
+            } else {
+                stateManager.setIdle()
+            }
+        } catch {
+            stateManager.setError(error)
+        }
+    }
+}
 
-		// Append the new photos we've loaded to the end of your self.catPhotos array
-		self.catPhotos = [self.catPhotos arrayByAddingObjectsFromArray:catPhotos];
+struct ContentView: View {
+    @StateObject private var viewModel = ItemsViewModel()
 
-		// Always call success() on the main queue:
-        dispatch_async(dispatch_get_main_queue(), ^{
-            success();
-        });
-    });    
-}   
-```
-
-### Loading The Next "Page"
-
-`JMStatefulTableViewController` will call it's `statefulDelegate` with this method to determine if it can load any more content.
-
-You should return a value indicating whether or not any more content exists to be loaded. This will control whether or not the user is shown a "Loading more" visual state.
-
-``` objective-c
-- (BOOL) statefulTableViewControllerShouldBeginLoadingNextPage:(JMStatefulTableViewController *)vc {
-    return [self _areThereAnyMoreHilariousCatPhotosOnTheServer];
+    var body: some View {
+        JMStatefulList(
+            state: viewModel.stateManager.state,
+            loadInitial: { try await viewModel.loadInitial() },
+            loadMore: viewModel.hasMore ? { try await viewModel.loadMore() } : nil
+        ) {
+            ForEach(viewModel.items) { item in
+                ItemRow(item: item)
+            }
+        }
+    }
 }
 ```
 
-## Pull To Refresh Customization
+## States
 
-`JMStatefulTableViewController` uses [@samvermette](https://github.com/samvermette)'s excellent [`SVPullToRefresh`](https://github.com/samvermette/SVPullToRefresh) library to accomplish both pull to refresh and infinite scrolling. It is very customizable, [you can read all about how in `SVPullToRefresh`'s documentation](https://github.com/samvermette/SVPullToRefresh#readme).
+Both UIKit and SwiftUI implementations support similar states:
 
-## Empty, Loading and Error Views
+### UIKit States (JMStatefulState)
 
-The demo app in this repo uses the built-in implementations of these views. Right now, they are simply full width and height solid color views, to give you something to look at when building your app.
+| State | Description |
+|-------|-------------|
+| `idle` | Normal state, user can scroll and interact |
+| `initialLoading` | First load, shows `loadingView` |
+| `loadingFromPullToRefresh` | Pull-to-refresh in progress |
+| `loadingNextPage` | Infinite scrolling load in progress |
+| `empty` | No content, shows `emptyView` |
+| `error(Error?)` | Error occurred, shows `errorView` |
 
-You can subclass `JMStatefulTableViewLoadingView`, `JMStatefulTableViewEmptyView` and `JMStatefulTableViewErrorView` respectively. Currently, they do not offer any special functionality or look and feel, but in the future they will emulate a "system" look and feel for these states. Feel free to take them or leave them.
+### SwiftUI States (JMStatefulListState)
 
-`JMStatefulTableViewController` has three properties:
+| State | Description |
+|-------|-------------|
+| `idle` | Normal state, content is visible |
+| `loading` | Initial load in progress |
+| `empty` | No content to display |
+| `error(Error)` | Error occurred |
 
-``` objective-c
-@property (strong, nonatomic) UIView *emptyView;
-@property (strong, nonatomic) UIView *loadingView;
-@property (strong, nonatomic) UIView *errorView;
+## Customizing Views
+
+### UIKit
+
+```swift
+class MyTableViewController: JMStatefulTableViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        // Custom loading view
+        let loadingView = UIView()
+        let spinner = UIActivityIndicatorView(style: .large)
+        // ... configure spinner
+        loadingView.addSubview(spinner)
+        self.loadingView = loadingView
+
+        // Custom empty view
+        let emptyView = UIView()
+        let label = UILabel()
+        label.text = "No items yet"
+        emptyView.addSubview(label)
+        self.emptyView = emptyView
+
+        // Custom error view
+        let errorView = UIView()
+        // ... configure error view with retry button
+        self.errorView = errorView
+    }
+}
 ```
 
-You can set these to any `UIView` you'd like, to indicate any of these states. Like I said, right now, by default, they're not anything useful, just solid colored views.
+### SwiftUI
 
-## Adding To Your Project
-
-### With CocoaPods
-
-If you are using [CocoaPods](http://cocoapods.org) then just add this line to your `Podfile`:
-
-``` ruby
-pod 'JMStatefulTableViewController'
+```swift
+JMStatefulList(
+    state: viewModel.state,
+    loadInitial: { try await viewModel.loadInitial() }
+) {
+    ForEach(viewModel.items) { item in
+        ItemRow(item: item)
+    }
+}
+.loadingView {
+    VStack {
+        ProgressView()
+        Text("Loading...")
+    }
+}
+.emptyView {
+    VStack {
+        Image(systemName: "tray")
+            .font(.largeTitle)
+        Text("No items yet")
+    }
+}
+.errorView { error in
+    VStack {
+        Text("Error: \(error.localizedDescription)")
+        Button("Retry") {
+            Task { try await viewModel.loadInitial() }
+        }
+    }
+}
 ```
 
-Now run `pod install` to install the dependency.
+## Configuration
 
-### Without CocoaPods
+### Disabling Features (UIKit)
 
-[Download](https://github.com/jakemarsh/JMStatefulTableViewController/zipball/master) the source files or add it as a [git submodule](http://schacon.github.com/git/user-manual.html#submodules). Here's how to add it as a submodule:
+```swift
+class MyTableViewController: JMStatefulTableViewController {
+    // Disable pull-to-refresh
+    override func shouldEnablePullToRefresh() -> Bool {
+        false
+    }
 
-    $ cd YourProject
-    $ git submodule add https://github.com/jakemarsh/JMStatefulTableViewController.git Vendor/JMStatefulTableViewController
+    // Disable infinite scrolling
+    override func shouldEnableInfiniteScrolling() -> Bool {
+        false
+    }
+}
+```
 
-Add all of the Objective-C files to your project.
+### State Transition Callbacks (UIKit)
 
-If you're installing this way, (instead of using CocoaPods) you'll also need to separately install [SVPullToRefresh](https://github.com/samvermette/SVPullToRefresh) on your own, as described in the [SVPullToRefresh README](https://github.com/samvermette/SVPullToRefresh#readme). (For this reason, and because it's an awesome system, I strongly reccomend using CocoaPods).
+```swift
+class MyTableViewController: JMStatefulTableViewController {
+    override func willTransition(from oldState: JMStatefulState, to newState: JMStatefulState) {
+        print("Transitioning from \(oldState) to \(newState)")
+    }
 
-`JMStatefulTableViewController` uses [Automatic Reference Counting (ARC)](http://clang.llvm.org/docs/AutomaticReferenceCounting.html). If your project doesn't use ARC, you will need to set the `-fobjc-arc` compiler flag on all of the `JMStatefulTableViewController` source files. To do this in Xcode, go to your active target and select the "Build Phases" tab. In the "Compiler Flags" column, set `-fobjc-arc` for each of the `JMStatefulTableViewController` source files.
+    override func didTransition(to state: JMStatefulState) {
+        print("Now in state: \(state)")
+    }
+}
+```
+
+## Migration from v1.x
+
+Version 2.0 is a complete rewrite in Swift with modern APIs:
+
+### Key Changes
+
+1. **Async/await**: All loading methods now use `async throws` instead of callbacks
+2. **Native refresh control**: Uses `UIRefreshControl` instead of SVPullToRefresh
+3. **Swift Package Manager**: Primary distribution method
+4. **SwiftUI support**: New `JMStatefulList` component
+
+### Migration Steps
+
+1. Replace callback-based loading with async methods:
+
+```swift
+// Before (v1.x)
+- (void)loadInitialContentWithCompletion:(void(^)(NSError *))completion {
+    [self.api fetchItemsWithCompletion:^(NSArray *items, NSError *error) {
+        self.items = items;
+        completion(error);
+    }];
+}
+
+// After (v2.0)
+override func loadInitialContent() async throws {
+    items = try await api.fetchItems()
+    tableView.reloadData()
+}
+```
+
+2. Update state checking:
+
+```swift
+// Before
+if (self.statefulState == JMStatefulTableViewControllerStateIdle) { ... }
+
+// After
+if statefulState == .idle { ... }
+```
+
+3. Replace delegate with override methods (or keep using delegate if preferred)
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
+
+## Author
+
+Jake Marsh ([@jakemarsh](https://github.com/jakemarsh))
